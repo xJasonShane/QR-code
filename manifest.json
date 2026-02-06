@@ -5,7 +5,8 @@
   "description": "一键生成网页二维码，框选识别二维码内容",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"

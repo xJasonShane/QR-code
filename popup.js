@@ -2,37 +2,102 @@ let qrcode = null;
 let currentQRContent = '';
 
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('Popup DOM loaded');
+  if (typeof QRCode === 'undefined') {
+    console.error('QRCode library not loaded');
+    return;
+  }
+  console.log('QRCode library is available');
   initQRCode();
-  loadCurrentUrl();
-  loadHistory();
-  setupEventListeners();
+  
+  setTimeout(() => {
+    loadCurrentUrl();
+    loadHistory();
+    setupEventListeners();
+  }, 100);
 });
 
 function initQRCode() {
   const container = document.getElementById('qrcode');
-  qrcode = new QRCode(container, {
-    width: 200,
-    height: 200,
-    colorDark: '#000000',
-    colorLight: '#ffffff',
-    correctLevel: QRCode.CorrectLevel.H
-  });
+  if (!container) {
+    console.error('QRCode container not found');
+    return;
+  }
+  try {
+    qrcode = new QRCode(container, {
+      width: 200,
+      height: 200,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.H
+    });
+    console.log('QRCode initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize QRCode:', error);
+  }
 }
 
 function loadCurrentUrl() {
-  chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-    if (tabs[0]) {
-      document.getElementById('currentUrl').value = tabs[0].url;
-      generateQRCode(tabs[0].url);
-    }
-  });
+  try {
+    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+      if (chrome.runtime.lastError) {
+        console.error('Error querying tabs:', chrome.runtime.lastError);
+        return;
+      }
+      if (tabs && tabs.length > 0 && tabs[0]) {
+        const url = tabs[0].url;
+        console.log('Current tab URL:', url);
+        const urlInput = document.getElementById('currentUrl');
+        if (urlInput) {
+          urlInput.value = url;
+          generateQRCode(url);
+        } else {
+          console.error('URL input element not found');
+        }
+      } else {
+        console.error('No active tab found, tabs:', tabs);
+      }
+    });
+  } catch (error) {
+    console.error('Error in loadCurrentUrl:', error);
+  }
+  
+  try {
+    chrome.tabs.getCurrent((tab) => {
+      if (chrome.runtime.lastError) {
+        console.error('Error getting current tab:', chrome.runtime.lastError);
+        return;
+      }
+      if (tab && tab.url) {
+        console.log('Current tab (getCurrent) URL:', tab.url);
+        const urlInput = document.getElementById('currentUrl');
+        if (urlInput && !urlInput.value) {
+          urlInput.value = tab.url;
+          generateQRCode(tab.url);
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error in getCurrent:', error);
+  }
 }
 
 function generateQRCode(content) {
-  if (!content) return;
-  
-  currentQRContent = content;
-  qrcode.makeCode(content);
+  if (!content) {
+    console.warn('No content provided for QR code');
+    return;
+  }
+  if (!qrcode) {
+    console.error('QRCode not initialized');
+    return;
+  }
+  try {
+    currentQRContent = content;
+    qrcode.makeCode(content);
+    console.log('QR code generated for:', content);
+  } catch (error) {
+    console.error('Error generating QR code:', error);
+  }
 }
 
 function saveQRCode() {
