@@ -1,48 +1,26 @@
-import { MESSAGE_TYPES } from './core/constants.js';
-import { logger } from './core/logger.js';
-import { errorHandler, AppError, ERROR_TYPES } from './core/error-handler.js';
+import { PERFORMANCE_METRICS, MESSAGE_TYPES } from '../core/constants.js';
+import { logger } from '../core/logger.js';
+import { storageManager } from '../core/storage-manager.js';
+import { errorHandler, AppError, ERROR_TYPES } from '../core/error-handler.js';
 
-class ContentScript {
+class QRRecognizer {
   constructor() {
-    this.isInitialized = false;
-    this.selectionMode = false;
+    this.isSelectionMode = false;
     this.selectionBox = null;
     this.startX = 0;
     this.startY = 0;
     this.currentX = 0;
     this.currentY = 0;
     this.html2canvasLoaded = false;
-    this.jsQRLoaded = false;
+    this.recognitionHistory = [];
+    this.maxHistorySize = 50;
     this.init();
   }
 
   init() {
-    try {
-      this.setupMessageListener();
-      this.setupKeyboardShortcuts();
-      this.loadLibraries();
-      this.isInitialized = true;
-      logger.info('ContentScript initialized');
-    } catch (error) {
-      logger.error('Failed to initialize ContentScript', error);
-      errorHandler.handleError(error);
-    }
-  }
-
-  async loadLibraries() {
-    try {
-      await this.loadHtml2Canvas();
-      await this.loadJsQR();
-      logger.info('All libraries loaded');
-    } catch (error) {
-      logger.error('Failed to load libraries', error);
-      throw errorHandler.handleError(new AppError(
-        'Failed to load required libraries',
-        ERROR_TYPES.NETWORK_ERROR,
-        9001,
-        { error }
-      ));
-    }
+    this.setupMessageListener();
+    this.loadHtml2Canvas();
+    logger.info('QRRecognizer initialized');
   }
 
   async loadHtml2Canvas() {
@@ -63,127 +41,65 @@ class ContentScript {
           throw errorHandler.handleError(new AppError(
             'html2canvas library failed to load',
             ERROR_TYPES.NETWORK_ERROR,
-            9002,
+            6001,
             { error }
           ));
         };
-        (document.head || document.documentElement).appendChild(script);
+        document.head.appendChild(script);
       } else {
         this.html2canvasLoaded = true;
         logger.info('html2canvas already available');
       }
     } catch (error) {
       logger.error('Failed to load html2canvas', error);
-      throw error;
-    }
-  }
-
-  async loadJsQR() {
-    if (this.jsQRLoaded) {
-      return;
-    }
-
-    try {
-      if (typeof jsQR === 'undefined') {
-        const script = document.createElement('script');
-        script.src = chrome.runtime.getURL('libs/jsQR.min.js');
-        script.onload = () => {
-          this.jsQRLoaded = true;
-          logger.info('jsQR loaded successfully');
-        };
-        script.onerror = (error) => {
-          logger.error('Failed to load jsQR', error);
-          throw errorHandler.handleError(new AppError(
-            'jsQR library failed to load',
-            ERROR_TYPES.NETWORK_ERROR,
-            9003,
-            { error }
-          ));
-        };
-        (document.head || document.documentElement).appendChild(script);
-      } else {
-        this.jsQRLoaded = true;
-        logger.info('jsQR already available');
-      }
-    } catch (error) {
-      logger.error('Failed to load jsQR', error);
-      throw error;
+      throw errorHandler.handleError(error);
     }
   }
 
   setupMessageListener() {
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      logger.debug(`Received message: ${request.action}`, { request, sender });
-      
-      switch (request.action) {
-        case MESSAGE_TYPES.TOGGLE_SELECTION_MODE:
-          this.toggleSelectionMode();
-          sendResponse({ status: 'ok', isSelectionMode: this.selectionMode });
-          break;
-          
-        case MESSAGE_TYPES.START_SELECTION:
-          this.startSelection(request.x, request.y);
-          sendResponse({ status: 'ok' });
-          break;
-          
-        case MESSAGE_TYPES.END_SELECTION:
-          this.endSelection();
-          sendResponse({ status: 'ok' });
-          break;
-          
-        case MESSAGE_TYPES.RECOGNIZE_QR:
-          this.recognizeFromRect(request.rect).then(result => {
-            sendResponse(result);
-          }).catch(error => {
-            sendResponse({ status: 'error', error: error.message });
-          });
-          break;
-          
-        default:
-          logger.warn(`Unknown message action: ${request.action}`);
-          sendResponse({ status: 'error', error: 'Unknown action' });
-      }
-      
-      return true;
-    });
-  }
-
-  setupKeyboardShortcuts() {
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && this.selectionMode) {
+      if (request.action === MESSAGE_TYPES.TOGGLE_SELECTION_MODE) {
         this.toggleSelectionMode();
+        sendResponse({ status: 'ok', isSelectionMode: this.isSelectionMode });
+      } else if (request.action === MESSAGE_TYPES.START_SELECTION) {
+        this.startSelection(request.x, request.y);
+        sendResponse({ status: 'ok' });
+      } else if (request.action === MESSAGE_TYPES.END_SELECTION) {
+        this.endSelection();
+        sendResponse({ status: 'ok' });
+      } else if (request.action === MESSAGE_TYPES.RECOGNIZE_QR) {
+        this.recognizeFromRect(request.rect).then(result => {
+          sendResponse(result);
+        }).catch(error => {
+          sendResponse({ status: 'error', error: error.message });
+        });
       }
     });
   }
 
   toggleSelectionMode() {
-    try {
-      this.selectionMode = !this.selectionMode;
-      
-      if (this.selectionMode) {
-        document.body.style.cursor = 'crosshair';
-        document.addEventListener('mousedown', this.handleMouseDown.bind(this));
-        document.addEventListener('mousemove', this.handleMouseMove.bind(this));
-        document.addEventListener('mouseup', this.handleMouseUp.bind(this));
-        this.showNotification('框选模式已开启，请框选二维码', 'info');
-        logger.info('Selection mode enabled');
-      } else {
-        document.body.style.cursor = 'default';
-        document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
-        document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
-        document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
-        this.removeSelectionBox();
-        this.showNotification('框选模式已关闭', 'info');
-        logger.info('Selection mode disabled');
-      }
-    } catch (error) {
-      logger.error('Failed to toggle selection mode', error);
-      errorHandler.handleError(error);
+    this.isSelectionMode = !this.isSelectionMode;
+    
+    if (this.isSelectionMode) {
+      document.body.style.cursor = 'crosshair';
+      document.addEventListener('mousedown', this.handleMouseDown.bind(this));
+      document.addEventListener('mousemove', this.handleMouseMove.bind(this));
+      document.addEventListener('mouseup', this.handleMouseUp.bind(this));
+      this.showNotification('框选模式已开启，请框选二维码', 'info');
+      logger.info('Selection mode enabled');
+    } else {
+      document.body.style.cursor = 'default';
+      document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
+      document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
+      document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
+      this.removeSelectionBox();
+      this.showNotification('框选模式已关闭', 'info');
+      logger.info('Selection mode disabled');
     }
   }
 
   handleMouseDown(event) {
-    if (!this.selectionMode) return;
+    if (!this.isSelectionMode) return;
     
     this.startX = event.clientX;
     this.startY = event.clientY;
@@ -195,7 +111,7 @@ class ContentScript {
   }
 
   handleMouseMove(event) {
-    if (!this.selectionMode || !this.selectionBox) return;
+    if (!this.isSelectionMode || !this.selectionBox) return;
     
     this.currentX = event.clientX;
     this.currentY = event.clientY;
@@ -209,50 +125,19 @@ class ContentScript {
   }
 
   handleMouseUp(event) {
-    if (!this.selectionMode || !this.selectionBox) return;
+    if (!this.isSelectionMode || !this.selectionBox) return;
     
     const rect = this.selectionBox.getBoundingClientRect();
     this.recognizeFromRect(rect);
     
     this.removeSelectionBox();
-    this.selectionMode = false;
+    this.isSelectionMode = false;
     document.body.style.cursor = 'default';
     document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
     document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
     document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
     
     logger.debug('Selection ended at:', rect);
-  }
-
-  startSelection(x, y) {
-    this.startX = x;
-    this.startY = y;
-    
-    if (!this.selectionMode) {
-      this.selectionMode = true;
-      document.body.style.cursor = 'crosshair';
-      document.addEventListener('mousedown', this.handleMouseDown.bind(this));
-      document.addEventListener('mousemove', this.handleMouseMove.bind(this));
-      document.addEventListener('mouseup', this.handleMouseUp.bind(this));
-    }
-    
-    logger.debug('Selection started at:', { x, y });
-  }
-
-  endSelection() {
-    if (this.selectionBox) {
-      const rect = this.selectionBox.getBoundingClientRect();
-      this.recognizeFromRect(rect);
-      this.removeSelectionBox();
-    }
-    
-    this.selectionMode = false;
-    document.body.style.cursor = 'default';
-    document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
-    document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
-    document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
-    
-    logger.info('Selection ended');
   }
 
   createSelectionBox() {
@@ -296,15 +181,11 @@ class ContentScript {
         await this.loadHtml2Canvas();
       }
 
-      if (!this.jsQRLoaded) {
-        await this.loadJsQR();
-      }
-
       if (typeof html2canvas === 'undefined') {
         throw new AppError(
           'html2canvas library not available',
           ERROR_TYPES.RUNTIME_ERROR,
-          9101
+          7001
         );
       }
 
@@ -312,7 +193,7 @@ class ContentScript {
         throw new AppError(
           'jsQR library not available',
           ERROR_TYPES.RUNTIME_ERROR,
-          9102
+          7002
         );
       }
 
@@ -320,8 +201,7 @@ class ContentScript {
       const capturedCanvas = await html2canvas(document.body, {
         useCORS: true,
         allowTaint: true,
-        logging: false,
-        scale: 1
+        logging: false
       });
 
       const ctx = canvas.getContext('2d');
@@ -340,6 +220,11 @@ class ContentScript {
       const imageData = ctx.getImageData(0, 0, rect.width, rect.height);
       const code = jsQR(imageData.data, imageData.width, imageData.height);
 
+      await storageManager.logPerformance(
+        PERFORMANCE_METRICS.QR_RECOGNITION_TIME,
+        startTime
+      );
+
       if (code) {
         const result = {
           success: true,
@@ -351,6 +236,9 @@ class ContentScript {
           duration: performance.now() - startTime
         };
 
+        this.addToRecognitionHistory(result);
+        await storageManager.saveToHistory(code.data);
+        
         this.showNotification(`识别成功: ${code.data.substring(0, 50)}${code.data.length > 50 ? '...' : ''}`, 'success');
         logger.info('QR code recognized successfully:', result);
         
@@ -382,7 +270,7 @@ class ContentScript {
       throw errorHandler.handleError(new AppError(
         'QR code recognition failed',
         ERROR_TYPES.RUNTIME_ERROR,
-        9103,
+        7003,
         { error, rect }
       ));
     }
@@ -395,6 +283,29 @@ class ContentScript {
     canvas.style.display = 'none';
     document.body.appendChild(canvas);
     return canvas;
+  }
+
+  addToRecognitionHistory(result) {
+    const historyEntry = {
+      ...result,
+      timestamp: Date.now(),
+      pageUrl: window.location.href
+    };
+    
+    this.recognitionHistory.unshift(historyEntry);
+    
+    if (this.recognitionHistory.length > this.maxHistorySize) {
+      this.recognitionHistory.pop();
+    }
+  }
+
+  getRecognitionHistory() {
+    return [...this.recognitionHistory];
+  }
+
+  clearRecognitionHistory() {
+    this.recognitionHistory = [];
+    logger.info('Recognition history cleared');
   }
 
   showNotification(message, type = 'info') {
@@ -438,24 +349,19 @@ class ContentScript {
   }
 
   destroy() {
-    try {
-      this.selectionMode = false;
-      this.removeSelectionBox();
-      document.body.style.cursor = 'default';
-      document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
-      document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
-      document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
-      document.removeEventListener('keydown', this.handleKeyDown.bind(this));
-      this.isInitialized = false;
-      logger.info('ContentScript destroyed');
-    } catch (error) {
-      logger.error('Failed to destroy ContentScript', error);
-    }
+    this.isSelectionMode = false;
+    this.removeSelectionBox();
+    document.body.style.cursor = 'default';
+    document.removeEventListener('mousedown', this.handleMouseDown.bind(this));
+    document.removeEventListener('mousemove', this.handleMouseMove.bind(this));
+    document.removeEventListener('mouseup', this.handleMouseUp.bind(this));
+    this.recognitionHistory = [];
+    logger.info('QRRecognizer destroyed');
   }
 }
 
-const contentScript = new ContentScript();
+const qrRecognizer = new QRRecognizer();
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ContentScript, contentScript };
+  module.exports = { QRRecognizer, qrRecognizer };
 }
